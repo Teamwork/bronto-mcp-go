@@ -4,6 +4,7 @@ go 1.27.0
 
 require (
 	github.com/google/jsonschema-go v0.4.3
+	github.com/joho/godotenv v1.5.1
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/teamwork/mcp v1.30.0
 	golang.org/x/sync v0.20.0

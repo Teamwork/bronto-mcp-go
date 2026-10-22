@@ -13,7 +13,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -22,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/teamwork/bronto-mcp-go/internal/bronto"
 	"github.com/teamwork/bronto-mcp-go/internal/brontosdk"
@@ -47,6 +51,10 @@ const (
 	envAPIKey   = "BRONTO_API_KEY"
 	envEndpoint = "BRONTO_API_ENDPOINT"
 
+	// envFile holds local configuration, read from the working directory.
+	// Variables already set in the environment take precedence over it.
+	envFile = ".env"
+
 	// brontoTimeout bounds one Bronto API call. Searches over long ranges are
 	// the slowest thing the tools do.
 	brontoTimeout = 2 * time.Minute
@@ -69,6 +77,13 @@ func main() {
 	flag.Var(methods, "toolsets", "Comma-separated list of toolsets to enable")
 	readOnly := flag.Bool("read-only", false, "Only expose tools that do not write")
 	flag.Parse()
+
+	// Read before config.Load, which reads the BRONTO_MCP_ variables. A
+	// missing file is fine: deployments configure the environment directly.
+	if err := godotenv.Load(envFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		fmt.Fprintf(os.Stderr, "failed to read %s: %v\n", envFile, err)
+		exit(exitCodeSetupFailure)
+	}
 
 	resources, teardown := config.Load(os.Stdout,
 		config.WithEnvPrefix(envPrefix),

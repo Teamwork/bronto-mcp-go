@@ -64,6 +64,14 @@ agent how to pick datasets by their tags and keys before it searches them.
 
 ## Configuration
 
+For local use, copy `.env.example` to `.env` and fill it in. The server reads `.env` from its working directory
+at startup. Variables already set in the environment take precedence over it, and it is gitignored, so the API
+key stays out of the repository.
+
+```shell
+cp .env.example .env
+```
+
 Bronto is configured with the same variables as the Python server:
 
 | Variable | Default | |
@@ -94,14 +102,15 @@ Datadog APM uses the standard agent variables (`DD_APM_TRACING_ENABLED`, `DD_SER
 
 Go 1.27 or newer.
 
+With a `.env` in place:
+
 ```shell
 make build
-BRONTO_API_KEY=<API KEY HERE> \
-BRONTO_API_ENDPOINT=https://api.eu.bronto.io \
 ./bin/bronto-mcp-http
 ```
 
-or, without building first, `BRONTO_API_KEY=… make run`. The MCP endpoint is served at `/` over streamable HTTP
+or, without building first, `make run`. Variables can also be passed directly, e.g.
+`BRONTO_API_KEY=… ./bin/bronto-mcp-http`. The MCP endpoint is served at `/` over streamable HTTP
 (stateless, JSON responses), and a health check at `/api/health`.
 
 To use it from Claude Code:
@@ -121,8 +130,10 @@ Then run `/mcp` in Claude Code to check that it connected. See the
 
 ```shell
 make image
-docker run --rm -p 8080:8080 -e BRONTO_API_KEY=<API KEY HERE> bronto-mcp:dev
+docker run --rm -p 8080:8080 --env-file .env bronto-mcp:dev
 ```
+
+`.env` is kept out of the image by `.dockerignore`, so pass it at run time with `--env-file`.
 
 ## Security
 
@@ -149,5 +160,5 @@ make fmt    # gofmt and go vet
 | `internal/jsonvalue` | Forgiving reads of loosely typed JSON from the Bronto API. |
 
 To add a tool, add the API call to `internal/brontosdk`, the tool to `internal/bronto`, its name to the
-`Method*` constants and the tool order in `tools.go`, and register it in `DefaultToolsetGroup` with
-`AddReadTools` or `AddWriteTools`. Tool tests run against the fake Bronto API in `internal/bronto/main_test.go`.
+`Method*` constants in `tools.go`, and a row to `toolList` there giving its toolset and whether it writes. The
+row's position sets the tool's place in `tools/list`. Tool tests run against the fake Bronto API in `internal/bronto/main_test.go`.

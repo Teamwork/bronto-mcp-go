@@ -1,0 +1,4 @@
+# Keep local secrets and build output out of the build context.
+.env
+bin/
+.git/
