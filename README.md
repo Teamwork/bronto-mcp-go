@@ -22,7 +22,7 @@ Sixteen tools in five toolsets. Write tools are marked ✏️ and are left out w
 
 | Tool | What it does |
 |---|---|
-| `search_logs` | Searches log events in one or more datasets with an optional SQL-style `WHERE` filter. Bare words match full text; `"field"='value'` matches one field. Returns each event's raw message and its attributes. Defaults to the last 20 minutes. |
+| `search_logs` | Searches log events in one or more datasets with an optional SQL-style `WHERE` filter. Bare words match full text; `"field"='value'` matches one field. Returns each event's raw message and its non-empty attributes, up to 20 events by default (`limit`, at most 200). Defaults to the last 20 minutes. |
 | `timeseries` | Computes aggregates (`AVG`, `MIN`, `MAX`, `COUNT`, `MEAN`, `MEDIAN`, `SUM`) over a time range, optionally grouped by keys. Returns, per group, a total event count and a series of data points. |
 
 ### Datasets (`bronto-datasets`)

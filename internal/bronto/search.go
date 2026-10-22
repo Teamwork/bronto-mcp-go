@@ -18,6 +18,14 @@ import (
 // no start.
 const defaultSearchWindow = 20 * time.Minute
 
+// defaultSearchLimit and maxSearchLimit bound how many events one search
+// returns. Every event carries its raw line and parsed attributes, so even a
+// modest page is large next to an MCP client's tool output limit.
+const (
+	defaultSearchLimit = 20
+	maxSearchLimit     = 200
+)
+
 // timeseriesSlices is how many data points an aggregate query splits its time
 // range into.
 const timeseriesSlices = 10
@@ -59,9 +67,17 @@ func SearchLogs(client *brontosdk.Client) toolsets.ToolWrapper {
 				"returns zero, recheck the field spelling with " + string(MethodGetKeys) +
 				" before reporting zero.",
 			InputSchema: &jsonschema.Schema{
-				Type:       "object",
-				Properties: searchTimeSchemas(map[string]*jsonschema.Schema{}),
-				Required:   []string{"log_ids"},
+				Type: "object",
+				Properties: searchTimeSchemas(map[string]*jsonschema.Schema{
+					"limit": optional(&jsonschema.Schema{
+						Type: "integer",
+						Description: fmt.Sprintf("Maximum number of events to return. Defaults to %d. "+
+							"Narrow the filter or time range rather than raising it.", defaultSearchLimit),
+						Minimum: new(1.0),
+						Maximum: new(float64(maxSearchLimit)),
+					}),
+				}),
+				Required: []string{"log_ids"},
 			},
 		},
 		Handler: func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -78,6 +94,7 @@ func SearchLogs(client *brontosdk.Client) toolsets.ToolWrapper {
 				LogIDs: logIDs,
 				Where:  arguments.GetString("search_filter", ""),
 				Select: defaultSelect,
+				Limit:  min(max(arguments.GetInt("limit", defaultSearchLimit), 1), maxSearchLimit),
 			})
 			if err != nil {
 				return errorResult(err, searchBadRequestHint)

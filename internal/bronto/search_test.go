@@ -12,7 +12,7 @@ func TestSearchLogs(t *testing.T) {
 	server, fake := newTestServer(t, map[string]route{
 		"GET /search": {body: `{"events":[{
 			"@raw":"GET /health 200","@status":"info","@time":1756063146000,
-			"attributes":{"$host":"i-123"},"message_kvs":{"path":"/health"}
+			"attributes":{"$host":"i-123","chatId":""},"message_kvs":{"path":"/health","user_id":""}
 		}]}`},
 	})
 
@@ -40,6 +40,9 @@ func TestSearchLogs(t *testing.T) {
 	if got := query["select"]; !slices.Equal(got, []string{"*", "@raw"}) {
 		t.Errorf("select = %v", got)
 	}
+	if query.Get("limit") != "20" {
+		t.Errorf("limit = %q, want the default of 20", query.Get("limit"))
+	}
 
 	if len(events) != 1 || events[0].Message != "GET /health 200" {
 		t.Fatalf("events = %+v", events)
@@ -48,6 +51,28 @@ func TestSearchLogs(t *testing.T) {
 		if _, ok := events[0].Attributes[key]; !ok {
 			t.Errorf("attribute %s missing: %v", key, events[0].Attributes)
 		}
+	}
+	for _, key := range []string{"chatId", "user_id"} {
+		if _, ok := events[0].Attributes[key]; ok {
+			t.Errorf("empty attribute %s kept: %v", key, events[0].Attributes)
+		}
+	}
+}
+
+func TestSearchLogsLimit(t *testing.T) {
+	// The fake ignores the limit, as a guard that the tool still enforces it.
+	server, fake := newTestServer(t, map[string]route{
+		"GET /search": {body: `{"events":[{"@raw":"one"},{"@raw":"two"},{"@raw":"three"}]}`},
+	})
+
+	var events []map[string]any
+	callTool(t, server, "search_logs", map[string]any{"log_ids": []string{"a"}, "limit": 2}, &events)
+
+	if got := fake.request(t, http.MethodGet, "/search").Query.Get("limit"); got != "2" {
+		t.Errorf("limit = %q, want 2", got)
+	}
+	if len(events) != 2 {
+		t.Errorf("got %d events, want 2", len(events))
 	}
 }
 
