@@ -111,20 +111,8 @@ make build
 
 or, without building first, `make run`. Variables can also be passed directly, e.g.
 `BRONTO_API_KEY=… ./bin/bronto-mcp-http`. The MCP endpoint is served at `/` over streamable HTTP
-(stateless, JSON responses), and a health check at `/api/health`.
-
-To use it from Claude Code:
-
-```shell
-claude mcp add --transport http bronto http://localhost:8080
-```
-
-This makes the server available to the current project. Add `--scope user` to make it available everywhere.
-Then run `/mcp` in Claude Code to check that it connected. See the
-[Claude Code MCP documentation](https://docs.anthropic.com/en/docs/claude-code/mcp) for more.
-
-> The Python server listened on port 8000. Set `BRONTO_MCP_SERVER_ADDRESS=:8000` to keep an existing
-> `claude mcp add` configuration working.
+(stateless, JSON responses), and a health check at `/api/health`. To use it from an AI tool, see
+[Connecting AI tools](#connecting-ai-tools).
 
 ### Docker
 
@@ -134,6 +122,146 @@ docker run --rm -p 8080:8080 --env-file .env bronto-mcp:dev
 ```
 
 `.env` is kept out of the image by `.dockerignore`, so pass it at run time with `--env-file`.
+
+## Connecting AI tools
+
+Start the server first (see [Usage](#usage)). Every example below assumes the default address,
+`http://localhost:8080`. The MCP endpoint is the root path, so there is no `/mcp` suffix.
+
+The server has no authentication of its own, so connect to it only from tools running on your own machine.
+Don't expose it to the internet so that a cloud-hosted assistant can reach it. Anyone who could reach it would
+be using your Bronto API key. See [Security](#security).
+
+> The Python server listened on port 8000. Set `BRONTO_MCP_SERVER_ADDRESS=:8000` to keep an existing
+> configuration working.
+
+### Claude Code
+
+```shell
+claude mcp add --transport http bronto http://localhost:8080
+```
+
+This makes the server available to the current project. Add `--scope user` to make it available everywhere.
+Run `/mcp` in Claude Code to check that it connected. See the
+[Claude Code MCP documentation](https://docs.anthropic.com/en/docs/claude-code/mcp).
+
+### Claude Desktop
+
+Claude Desktop's configuration file only starts local commands, so it reaches this HTTP server through the
+[`mcp-remote`](https://www.npmjs.com/package/mcp-remote) bridge, which needs Node.js. Open **Settings →
+Developer → Edit Config** and add:
+
+```json
+{
+  "mcpServers": {
+    "bronto": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://localhost:8080"]
+    }
+  }
+}
+```
+
+The file is `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS and
+`%APPDATA%\Claude\claude_desktop_config.json` on Windows. Quit and restart Claude Desktop, then check the
+connector list under the **+** button in the message box. If it fails to connect, `~/Library/Logs/Claude/mcp*.log`
+(macOS) or `%APPDATA%\Claude\logs` (Windows) says why.
+
+Claude's **Settings → Connectors → Add custom connector** won't work here: those connections come from
+Anthropic's cloud, which can't reach `localhost`.
+
+### ChatGPT and Codex
+
+The ChatGPT web app connects to MCP servers from OpenAI's cloud, so like Claude's custom connectors it can't
+reach a server on your machine. Use Codex instead: the Codex app, CLI and IDE extension all run locally and
+share one configuration.
+
+- **Codex app:** **Settings → MCP servers**, choose **Streamable HTTP**, enter `http://localhost:8080`, save
+  and restart.
+- **Codex CLI:**
+
+  ```shell
+  codex mcp add bronto --url http://localhost:8080
+  ```
+
+  or add it to `~/.codex/config.toml` yourself:
+
+  ```toml
+  [mcp_servers.bronto]
+  url = "http://localhost:8080"
+  ```
+
+See the [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp).
+
+### Cursor
+
+Add the server to `~/.cursor/mcp.json` to make it available everywhere, or to `.cursor/mcp.json` for one
+project:
+
+```json
+{
+  "mcpServers": {
+    "bronto": {
+      "url": "http://localhost:8080"
+    }
+  }
+}
+```
+
+A green dot next to the server in Cursor's MCP settings means it connected. See the
+[Cursor MCP documentation](https://cursor.com/docs/context/mcp).
+
+### VS Code (GitHub Copilot)
+
+Run **MCP: Add Server** from the Command Palette, choose **HTTP**, and enter `http://localhost:8080`. You can
+also add it from the command line:
+
+```shell
+code --add-mcp '{"name":"bronto","type":"http","url":"http://localhost:8080"}'
+```
+
+To share it with a project, add it to `.vscode/mcp.json`. VS Code's format uses `servers`, not `mcpServers`:
+
+```json
+{
+  "servers": {
+    "bronto": {
+      "type": "http",
+      "url": "http://localhost:8080"
+    }
+  }
+}
+```
+
+See the [VS Code MCP configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration).
+
+### Gemini CLI
+
+```shell
+gemini mcp add --transport http --scope user bronto http://localhost:8080
+```
+
+or add it to `~/.gemini/settings.json` yourself. Use `httpUrl`, not `url`, which Gemini CLI treats as the
+older SSE transport:
+
+```json
+{
+  "mcpServers": {
+    "bronto": {
+      "httpUrl": "http://localhost:8080"
+    }
+  }
+}
+```
+
+Run `/mcp` in Gemini CLI to check that it connected. See the
+[Gemini CLI MCP documentation](https://geminicli.com/docs/tools/mcp-server).
+
+### Other clients
+
+Any client that supports MCP's streamable HTTP transport can connect to `http://localhost:8080`. If a client
+only starts local commands, put `npx -y mcp-remote http://localhost:8080` in front of it, as for Claude
+Desktop.
 
 ## Security
 
