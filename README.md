@@ -162,10 +162,14 @@ Developer → Edit Config** and add:
 }
 ```
 
-The file is `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS and
-`%APPDATA%\Claude\claude_desktop_config.json` on Windows. Quit and restart Claude Desktop, then check the
-connector list under the **+** button in the message box. If it fails to connect, `~/Library/Logs/Claude/mcp*.log`
-(macOS) or `%APPDATA%\Claude\logs` (Windows) says why.
+The file is `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS,
+`%APPDATA%\Claude\claude_desktop_config.json` on Windows and `~/.config/Claude/claude_desktop_config.json` on
+Linux. Quit and restart Claude Desktop, then check the connector list under the **+** button in the message box.
+If it fails to connect, `~/Library/Logs/Claude/mcp*.log` (macOS) or `%APPDATA%\Claude\logs` (Windows) says why.
+
+If the log says `npx` can't be found, put its full path in `command`. Run `which npx` (macOS and Linux) or
+`where npx` (Windows) to find it. Claude Desktop doesn't load your shell's `PATH`, which matters most when
+Node.js comes from a version manager such as nvm.
 
 Claude's **Settings → Connectors → Add custom connector** won't work here: those connections come from
 Anthropic's cloud, which can't reach `localhost`.
