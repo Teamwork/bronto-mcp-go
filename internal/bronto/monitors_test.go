@@ -142,9 +142,47 @@ func TestValidateMonitors(t *testing.T) {
 	if result.Results[2].Status != healthError || result.Results[2].MonitorID != "m-3" {
 		t.Errorf("orphan monitor = %+v", result.Results[2])
 	}
-	body := fake.request(t, http.MethodPost, "/search").Body
-	if body["time_range"] != healthCheckWindow || body["where"] == nil {
-		t.Errorf("health check body = %v", body)
+	// The checks run concurrently, so the searches arrive in no fixed order.
+	// The orphan monitor has no query to run.
+	if n := fake.count(http.MethodPost, "/search"); n != 2 {
+		t.Errorf("ran %d health-check searches, want 2", n)
+	}
+	filtered := false
+	for _, r := range fake.requests {
+		if r.Path != "/search" {
+			continue
+		}
+		if r.Body["time_range"] != healthCheckWindow {
+			t.Errorf("health check body = %v", r.Body)
+		}
+		filtered = filtered || r.Body["where"] != nil
+	}
+	if !filtered {
+		t.Error("no health check carried the monitor's where filter")
+	}
+}
+
+func TestValidateMonitorsChecksASharedDefinitionOnce(t *testing.T) {
+	server, fake := newTestServer(t, map[string]route{
+		"GET /monitors": {body: `{"monitors":[
+			{"id":"m-1","name":"One","metric_id":"d-1"},
+			{"id":"m-2","name":"Two","metric_id":"d-1"}
+		]}`},
+		"GET /metrics/definitions": {body: definitionsBody},
+		"POST /search":             {body: `{"totals":{"count":4}}`},
+	})
+
+	var result struct {
+		Summary healthSummary   `json:"summary"`
+		Results []monitorHealth `json:"results"`
+	}
+	callTool(t, server, "validate_monitors", map[string]any{}, &result)
+
+	if result.Summary != (healthSummary{OK: 2}) || len(result.Results) != 2 {
+		t.Errorf("result = %+v", result)
+	}
+	if n := fake.count(http.MethodPost, "/search"); n != 1 {
+		t.Errorf("ran %d searches for one shared definition, want 1", n)
 	}
 }
 

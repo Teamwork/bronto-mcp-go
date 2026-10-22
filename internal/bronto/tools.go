@@ -68,19 +68,50 @@ const (
 	MethodGetCoverage toolsets.Method = "get_coverage"
 )
 
-const (
-	searchDescription = "Search log events and compute aggregate metrics over Bronto log data."
+// toolsetList is every toolset with its description, as the -toolsets flag
+// lists them.
+var toolsetList = []struct {
+	method      toolsets.Method
+	description string
+}{
+	{ToolsetSearch, "Search log events and compute aggregate metrics over Bronto log data."},
+	{ToolsetDatasets, "Discover Bronto datasets, the collections they belong to, and the keys and " +
+		"values their data contains."},
+	{ToolsetMonitors, "Create, list and health-check Bronto alerting monitors."},
+	{ToolsetSavedSearches, "List, create and run Bronto saved searches."},
+	{ToolsetOrganisation, "Report org-wide parsing errors, ingestion and search usage, and " +
+		"monitoring coverage."},
+}
 
-	datasetsDescription = "Discover Bronto datasets, the collections they belong to, and the keys and " +
-		"values their data contains."
-
-	monitorsDescription = "Create, list and health-check Bronto alerting monitors."
-
-	savedSearchesDescription = "List, create and run Bronto saved searches."
-
-	organisationDescription = "Report org-wide parsing errors, ingestion and search usage, and " +
-		"monitoring coverage."
-)
+// toolList is every tool, the toolset it belongs to and whether it writes.
+//
+// tools/list keeps this order, the one the Python server registered them in,
+// so clients that truncate the list keep the search and discovery tools.
+// Adding a tool takes its Method constant and a row here.
+var toolList = []struct {
+	toolset toolsets.Method
+	write   bool
+	// build makes the tool. It must not use the client until the tool is
+	// called: init builds every tool with a nil client to read its name.
+	build func(*brontosdk.Client) toolsets.ToolWrapper
+}{
+	{ToolsetSearch, false, SearchLogs},
+	{ToolsetSearch, false, Timeseries},
+	{ToolsetDatasets, false, GetDatasets},
+	{ToolsetDatasets, false, GetDatasetsByName},
+	{ToolsetDatasets, false, GetKeys},
+	{ToolsetDatasets, false, GetAllDatasetsKeys},
+	{ToolsetDatasets, false, GetKeyValues},
+	{ToolsetMonitors, true, CreateMonitor},
+	{ToolsetSavedSearches, false, GetSavedSearches},
+	{ToolsetSavedSearches, true, CreateSavedSearch},
+	{ToolsetSavedSearches, false, RunSavedSearch},
+	{ToolsetMonitors, false, SearchMonitors},
+	{ToolsetOrganisation, false, GetErrorSummary},
+	{ToolsetOrganisation, false, GetUsage},
+	{ToolsetOrganisation, false, GetCoverage},
+	{ToolsetMonitors, false, ValidateMonitors},
+}
 
 // Instructions tell a client how the tools fit together. They are sent in the
 // initialize handshake.
@@ -103,32 +134,14 @@ const Instructions = "Use this MCP server to interact with log data stored in Br
 	"some of the keys present in the dataset."
 
 func init() {
-	toolsets.RegisterMethod(ToolsetSearch)
-	toolsets.RegisterMethod(ToolsetDatasets)
-	toolsets.RegisterMethod(ToolsetMonitors)
-	toolsets.RegisterMethod(ToolsetSavedSearches)
-	toolsets.RegisterMethod(ToolsetOrganisation)
-
-	// tools/list keeps the order the Python server registered them in, so
-	// clients that truncate the list keep the search and discovery tools.
-	toolsets.RegisterToolOrder([]toolsets.Method{
-		MethodSearchLogs,
-		MethodTimeseries,
-		MethodGetDatasets,
-		MethodGetDatasetsByName,
-		MethodGetKeys,
-		MethodGetAllDatasetsKeys,
-		MethodGetKeyValues,
-		MethodCreateMonitor,
-		MethodGetSavedSearches,
-		MethodCreateSavedSearch,
-		MethodRunSavedSearch,
-		MethodSearchMonitors,
-		MethodGetErrorSummary,
-		MethodGetUsage,
-		MethodGetCoverage,
-		MethodValidateMonitors,
-	})
+	for _, toolset := range toolsetList {
+		toolsets.RegisterMethod(toolset.method)
+	}
+	order := make([]toolsets.Method, 0, len(toolList))
+	for _, tool := range toolList {
+		order = append(order, toolsets.Method(tool.build(nil).Tool.Name))
+	}
+	toolsets.RegisterToolOrder(order)
 }
 
 // DefaultToolsetGroup builds the toolset group this server registers. With
@@ -138,52 +151,21 @@ func init() {
 // token's grants, and this server takes no OAuth tokens: every caller acts
 // with the one Bronto API key the server was started with.
 func DefaultToolsetGroup(readOnly bool, client *brontosdk.Client) *toolsets.ToolsetGroup {
+	byMethod := make(map[toolsets.Method]*toolsets.Toolset, len(toolsetList))
+	for _, toolset := range toolsetList {
+		byMethod[toolset.method] = toolsets.NewToolset(toolset.method, toolset.description)
+	}
+	for _, tool := range toolList {
+		if tool.write {
+			byMethod[tool.toolset].AddWriteTools(tool.build(client))
+		} else {
+			byMethod[tool.toolset].AddReadTools(tool.build(client))
+		}
+	}
+
 	group := toolsets.NewToolsetGroup(readOnly)
-
-	group.AddToolset(toolsets.NewToolset(ToolsetSearch, searchDescription).
-		AddReadTools(
-			SearchLogs(client),
-			Timeseries(client),
-		),
-	)
-
-	group.AddToolset(toolsets.NewToolset(ToolsetDatasets, datasetsDescription).
-		AddReadTools(
-			GetDatasets(client),
-			GetDatasetsByName(client),
-			GetKeys(client),
-			GetAllDatasetsKeys(client),
-			GetKeyValues(client),
-		),
-	)
-
-	group.AddToolset(toolsets.NewToolset(ToolsetMonitors, monitorsDescription).
-		AddReadTools(
-			SearchMonitors(client),
-			ValidateMonitors(client),
-		).
-		AddWriteTools(
-			CreateMonitor(client),
-		),
-	)
-
-	group.AddToolset(toolsets.NewToolset(ToolsetSavedSearches, savedSearchesDescription).
-		AddReadTools(
-			GetSavedSearches(client),
-			RunSavedSearch(client),
-		).
-		AddWriteTools(
-			CreateSavedSearch(client),
-		),
-	)
-
-	group.AddToolset(toolsets.NewToolset(ToolsetOrganisation, organisationDescription).
-		AddReadTools(
-			GetErrorSummary(client),
-			GetUsage(client),
-			GetCoverage(client),
-		),
-	)
-
+	for _, toolset := range toolsetList {
+		group.AddToolset(byMethod[toolset.method])
+	}
 	return group
 }

@@ -72,3 +72,17 @@ func TestAnnotationHintsAreExplicit(t *testing.T) {
 		}
 	}
 }
+
+// tools/list keeps the Python server's order, so clients that truncate the
+// list keep the search and discovery tools.
+func TestToolOrderMatchesThePythonServer(t *testing.T) {
+	want := []toolsets.Method{
+		MethodSearchLogs, MethodTimeseries, MethodGetDatasets, MethodGetDatasetsByName, MethodGetKeys,
+		MethodGetAllDatasetsKeys, MethodGetKeyValues, MethodCreateMonitor, MethodGetSavedSearches,
+		MethodCreateSavedSearch, MethodRunSavedSearch, MethodSearchMonitors, MethodGetErrorSummary,
+		MethodGetUsage, MethodGetCoverage, MethodValidateMonitors,
+	}
+	if got := toolsets.ToolOrder(); !slices.Equal(got, want) {
+		t.Errorf("tool order = %v, want %v", got, want)
+	}
+}

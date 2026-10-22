@@ -58,7 +58,7 @@ func TestCreateSavedSearch(t *testing.T) {
 
 	body := fake.request(t, http.MethodPost, "/saved-searches").Body
 	details := body["search_details"].(map[string]any)
-	if details["from"] != "a,b" || details["select"] != defaultSavedSearchSelect || details["where"] == nil {
+	if details["from"] != "a,b" || details["select"] != "*,@raw" || details["where"] == nil {
 		t.Errorf("search_details = %v", details)
 	}
 	if _, ok := details["time_range"]; ok {

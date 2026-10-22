@@ -87,8 +87,8 @@ func main() {
 		endpoint = brontosdk.DefaultEndpoint
 	}
 
-	done := make(chan os.Signal, 1)
-	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	// The Bronto client gets its own HTTP client rather than the shared
 	// Teamwork one: that one's logging transport writes out every request
@@ -126,24 +126,22 @@ func main() {
 		slog.String("bronto_endpoint", endpoint),
 		slog.String("env_prefix", envPrefix),
 	)
-	go func() {
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			resources.Logger().Error("failed to start server",
-				slog.String("address", resources.Info.ServerAddress),
-				slog.String("error", err.Error()),
-			)
-			select {
-			case <-done:
-			default:
-				close(done)
-			}
-		}
-	}()
+	// ListenAndServe only returns ErrServerClosed once Shutdown is called,
+	// which happens below, so anything it sends here is a real failure.
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- httpServer.ListenAndServe() }()
 
-	<-done
-	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	select {
+	case <-ctx.Done():
+	case err := <-serveErr:
+		resources.Logger().Error("failed to start server",
+			slog.String("address", resources.Info.ServerAddress),
+			slog.String("error", err.Error()),
+		)
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	if err := httpServer.Shutdown(ctx); err != nil {
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		resources.Logger().Error("server shutdown failed", slog.String("error", err.Error()))
 	}
 	resources.Logger().Info("server stopped")

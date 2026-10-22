@@ -15,21 +15,12 @@ import (
 // maxSavedSearchLimit caps how many saved searches one listing returns.
 const maxSavedSearchLimit = 100
 
-// defaultSavedSearchSelect is what a saved search returns when it names no
-// fields: every parsed field plus the raw line.
-const defaultSavedSearchSelect = "*,@raw"
-
 // GetSavedSearches lists or fetches saved searches.
 func GetSavedSearches(client *brontosdk.Client) toolsets.ToolWrapper {
 	return toolsets.ToolWrapper{
 		Tool: &mcp.Tool{
-			Name: string(MethodGetSavedSearches),
-			Annotations: &mcp.ToolAnnotations{
-				Title:           "Get Saved Searches",
-				ReadOnlyHint:    true,
-				DestructiveHint: new(false),
-				OpenWorldHint:   new(false),
-			},
+			Name:        string(MethodGetSavedSearches),
+			Annotations: readAnnotations("Get Saved Searches"),
 			Description: "Lists saved searches, or fetches one by id. Optionally filter the list by a " +
 				"case-insensitive text query. Use this to discover reusable saved queries.",
 			InputSchema: &jsonschema.Schema{
@@ -104,12 +95,8 @@ type savedSearchBody struct {
 func CreateSavedSearch(client *brontosdk.Client) toolsets.ToolWrapper {
 	return toolsets.ToolWrapper{
 		Tool: &mcp.Tool{
-			Name: string(MethodCreateSavedSearch),
-			Annotations: &mcp.ToolAnnotations{
-				Title:           "Create Saved Search",
-				DestructiveHint: new(false),
-				OpenWorldHint:   new(false),
-			},
+			Name:        string(MethodCreateSavedSearch),
+			Annotations: writeAnnotations("Create Saved Search"),
 			Description: "Saves a reusable search. Provide a name, the dataset log IDs, and optionally a WHERE " +
 				"filter, a select, and a relative time range. Returns the created saved search, including its " +
 				"id. With dry_run, returns {dry_run: true, saved_search_body} and creates nothing.",
@@ -127,7 +114,7 @@ func CreateSavedSearch(client *brontosdk.Client) toolsets.ToolWrapper {
 					}),
 					"select": optional(&jsonschema.Schema{
 						Type:        "string",
-						Description: "Fields or aggregate to return. Defaults to \"" + defaultSavedSearchSelect + "\".",
+						Description: "Fields or aggregate to return. Defaults to \"" + strings.Join(defaultSelect, ",") + "\".",
 					}),
 					"time_range": optional(&jsonschema.Schema{
 						Type:        "string",
@@ -142,26 +129,19 @@ func CreateSavedSearch(client *brontosdk.Client) toolsets.ToolWrapper {
 			},
 		},
 		Handler: func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			arguments, err := helpers.NewToolArguments(request)
+			var name string
+			var logIDs []string
+			arguments, err := bindArguments(request,
+				helpers.RequiredParam(&name, "name"),
+				requiredStrings(&logIDs, "log_ids"),
+			)
 			if err != nil {
 				return helpers.NewToolResultTextError("%v", err), nil
-			}
-			name, err := arguments.RequireString("name")
-			if err != nil {
-				return helpers.NewToolResultTextError("%v", err), nil
-			}
-			logIDs, err := arguments.RequireStringSlice("log_ids")
-			if err != nil {
-				return helpers.NewToolResultTextError("%v", err), nil
-			}
-			selected := arguments.GetString("select", "")
-			if selected == "" {
-				selected = defaultSavedSearchSelect
 			}
 
 			details := map[string]string{
 				"from":   strings.Join(logIDs, ","),
-				"select": selected,
+				"select": stringOr(arguments, "select", strings.Join(defaultSelect, ",")),
 			}
 			if where := arguments.GetString("search_filter", ""); where != "" {
 				details["where"] = where
@@ -187,13 +167,8 @@ func CreateSavedSearch(client *brontosdk.Client) toolsets.ToolWrapper {
 func RunSavedSearch(client *brontosdk.Client) toolsets.ToolWrapper {
 	return toolsets.ToolWrapper{
 		Tool: &mcp.Tool{
-			Name: string(MethodRunSavedSearch),
-			Annotations: &mcp.ToolAnnotations{
-				Title:           "Run Saved Search",
-				ReadOnlyHint:    true,
-				DestructiveHint: new(false),
-				OpenWorldHint:   new(false),
-			},
+			Name:        string(MethodRunSavedSearch),
+			Annotations: readAnnotations("Run Saved Search"),
 			Description: "Executes a saved search by id. Returns its events (each with @raw, @time, @status and " +
 				"message_kvs), or for an aggregate search the grouped results under totals/groups_series. Pass " +
 				"time_range to run over a different window than it was saved with. Use " +
@@ -219,11 +194,8 @@ func RunSavedSearch(client *brontosdk.Client) toolsets.ToolWrapper {
 			},
 		},
 		Handler: func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			arguments, err := helpers.NewToolArguments(request)
-			if err != nil {
-				return helpers.NewToolResultTextError("%v", err), nil
-			}
-			id, err := arguments.RequireString("saved_search_id")
+			var id string
+			arguments, err := bindArguments(request, helpers.RequiredParam(&id, "saved_search_id"))
 			if err != nil {
 				return helpers.NewToolResultTextError("%v", err), nil
 			}
@@ -278,7 +250,7 @@ func savedSearchQuery(saved, details map[string]any) map[string]any {
 	}
 	selected := asList(details["select"])
 	if len(selected) == 0 {
-		selected = []string{"*", "@raw"}
+		selected = defaultSelect
 	}
 	body["select"] = selected
 	if groups := asList(details["groups"]); len(groups) > 0 {
@@ -302,13 +274,12 @@ var eventFields = []string{"@raw", "@time", "@status", "message_kvs"}
 // their groups_series and totals instead.
 func shapeSearchResponse(resp map[string]any) map[string]any {
 	out := map[string]any{}
-	if jsonvalue.Truthy(resp["groups_series"]) || jsonvalue.Truthy(resp["totals"]) {
-		for _, key := range []string{"groups_series", "totals"} {
-			if jsonvalue.Truthy(resp[key]) {
-				out[key] = resp[key]
-			}
+	for _, key := range []string{"groups_series", "totals"} {
+		if jsonvalue.Truthy(resp[key]) {
+			out[key] = resp[key]
 		}
-	} else {
+	}
+	if len(out) == 0 {
 		events := []any{}
 		for _, item := range jsonvalue.Slice(resp["events"]) {
 			event, ok := item.(map[string]any)

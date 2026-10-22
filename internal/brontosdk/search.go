@@ -2,6 +2,7 @@ package brontosdk
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -58,12 +59,8 @@ func (c *Client) SearchEvents(ctx context.Context, req EventSearchRequest) ([]Lo
 			"@status": event["@status"],
 			"@time":   event["@time"],
 		}
-		for key, value := range jsonvalue.Map(event["attributes"]) {
-			attributes[key] = value
-		}
-		for key, value := range jsonvalue.Map(event["message_kvs"]) {
-			attributes[key] = value
-		}
+		maps.Copy(attributes, jsonvalue.Map(event["attributes"]))
+		maps.Copy(attributes, jsonvalue.Map(event["message_kvs"]))
 		events = append(events, LogEvent{
 			Message:    jsonvalue.String(event["@raw"]),
 			Attributes: attributes,

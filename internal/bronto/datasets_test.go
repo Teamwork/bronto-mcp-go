@@ -89,13 +89,16 @@ func TestGetAllDatasetsKeys(t *testing.T) {
 }
 
 func TestGetKeyValues(t *testing.T) {
-	server, _ := newTestServer(t, map[string]route{"GET /top-keys": {body: topKeysBody}})
+	server, fake := newTestServer(t, map[string]route{"GET /top-keys": {body: topKeysBody}})
 
 	var values []string
 	callTool(t, server, "get_key_values",
 		map[string]any{"key": "status", "log_id": "11111111-1111-1111-1111-111111111111"}, &values)
 	if !slices.Equal(values, []string{"200", "500"}) {
 		t.Errorf("values = %v", values)
+	}
+	if got := fake.request(t, http.MethodGet, "/top-keys").Query.Get("log_id"); got == "" {
+		t.Error("log_id was not sent, so every dataset's keys were fetched")
 	}
 
 	callTool(t, server, "get_key_values", map[string]any{"key": "missing", "log_id": "x"}, &values)

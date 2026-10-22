@@ -3,6 +3,7 @@ package bronto
 import (
 	"cmp"
 	"context"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/teamwork/bronto-mcp-go/internal/jsonvalue"
 	"github.com/teamwork/mcp/pkg/helpers"
 	"github.com/teamwork/mcp/pkg/toolsets"
+	"golang.org/x/sync/errgroup"
 )
 
 // activeWindow is how recent a dataset's last heartbeat must be for it to
@@ -27,19 +29,14 @@ func timeRangeSchema(description string) *jsonschema.Schema {
 func GetErrorSummary(client *brontosdk.Client) toolsets.ToolWrapper {
 	return toolsets.ToolWrapper{
 		Tool: &mcp.Tool{
-			Name: string(MethodGetErrorSummary),
-			Annotations: &mcp.ToolAnnotations{
-				Title:           "Get Error Summary",
-				ReadOnlyHint:    true,
-				DestructiveHint: new(false),
-				OpenWorldHint:   new(false),
-			},
+			Name:        string(MethodGetErrorSummary),
+			Annotations: readAnnotations("Get Error Summary"),
 			Description: "Returns org-wide parsing/ingestion error and warning totals with a per-dataset " +
 				"breakdown. Precomputed, so it costs no search quota. Optionally scoped by time range.",
 			InputSchema: &jsonschema.Schema{
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
-					"time_range": timeRangeSchema("Relative window, e.g. \"Last 24 hours\", the default."),
+					"time_range": timeRangeSchema("Relative window, e.g. \"" + defaultErrorWindow + "\", the default."),
 				},
 			},
 		},
@@ -48,27 +45,23 @@ func GetErrorSummary(client *brontosdk.Client) toolsets.ToolWrapper {
 			if err != nil {
 				return helpers.NewToolResultTextError("%v", err), nil
 			}
-			timeRange := arguments.GetString("time_range", "")
-			if timeRange == "" {
-				timeRange = "Last 24 hours"
-			}
+			timeRange := stringOr(arguments, "time_range", defaultErrorWindow)
 
-			raw, err := client.ErrorAnalytics(ctx, timeRange)
-			if err != nil {
+			var raw any
+			var datasets []any
+			group, groupCtx := errgroup.WithContext(ctx)
+			group.Go(func() (err error) {
+				raw, err = client.ErrorAnalytics(groupCtx, timeRange)
+				return err
+			})
+			group.Go(func() (err error) {
+				datasets, err = client.Datasets(groupCtx)
+				return err
+			})
+			if err := group.Wait(); err != nil {
 				return errorResult(err, "")
 			}
-			datasets, err := client.Datasets(ctx)
-			if err != nil {
-				return errorResult(err, "")
-			}
-			index := make(map[string]map[string]any, len(datasets))
-			for _, item := range datasets {
-				d := jsonvalue.Map(item)
-				if jsonvalue.Truthy(d["log_id"]) {
-					index[jsonvalue.String(d["log_id"])] = d
-				}
-			}
-			return helpers.NewToolResultJSON(shapeErrorSummary(raw, index))
+			return helpers.NewToolResultJSON(shapeErrorSummary(raw, indexBy(datasets, "log_id")))
 		},
 	}
 }
@@ -181,13 +174,8 @@ type usageSummary struct {
 func GetUsage(client *brontosdk.Client) toolsets.ToolWrapper {
 	return toolsets.ToolWrapper{
 		Tool: &mcp.Tool{
-			Name: string(MethodGetUsage),
-			Annotations: &mcp.ToolAnnotations{
-				Title:           "Get Usage",
-				ReadOnlyHint:    true,
-				DestructiveHint: new(false),
-				OpenWorldHint:   new(false),
-			},
+			Name:        string(MethodGetUsage),
+			Annotations: readAnnotations("Get Usage"),
 			Description: "Reports per-dataset ingestion and search usage (bytes) for the org against its monthly " +
 				"limits. Use to understand data volume and spend. Only billable usage is reported: system " +
 				"collections such as .usage and .audit-trail are excluded.",
@@ -195,7 +183,7 @@ func GetUsage(client *brontosdk.Client) toolsets.ToolWrapper {
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
 					"time_range": timeRangeSchema(
-						"Relative window, \"This month\" by default; limits are per calendar month."),
+						"Relative window, \"" + defaultUsageWindow + "\" by default; limits are per calendar month."),
 				},
 			},
 		},
@@ -204,38 +192,40 @@ func GetUsage(client *brontosdk.Client) toolsets.ToolWrapper {
 			if err != nil {
 				return helpers.NewToolResultTextError("%v", err), nil
 			}
-			timeRange := arguments.GetString("time_range", "")
-			if timeRange == "" {
-				timeRange = "This month"
+			timeRange := stringOr(arguments, "time_range", defaultUsageWindow)
+
+			var ingest, search map[string]brontosdk.UsageRow
+			var limits []any
+			group, groupCtx := errgroup.WithContext(ctx)
+			group.Go(func() (err error) {
+				ingest, err = usageByLog(groupCtx, client, brontosdk.UsageIngestion, timeRange)
+				return err
+			})
+			group.Go(func() (err error) {
+				search, err = usageByLog(groupCtx, client, brontosdk.UsageSearch, timeRange)
+				return err
+			})
+			group.Go(func() (err error) {
+				limits, err = client.Limits(groupCtx)
+				return err
+			})
+			if err := group.Wait(); err != nil {
+				return errorResult(err, "")
 			}
 
-			ingest, err := usageByLog(ctx, client, brontosdk.UsageIngestion, timeRange)
-			if err != nil {
-				return errorResult(err, "")
-			}
-			search, err := usageByLog(ctx, client, brontosdk.UsageSearch, timeRange)
-			if err != nil {
-				return errorResult(err, "")
-			}
-			limits, err := client.Limits(ctx)
-			if err != nil {
-				return errorResult(err, "")
-			}
-
-			byLogID := make(map[string]*datasetUsage)
-			for _, index := range []map[string]brontosdk.UsageRow{ingest, search} {
-				for logID := range index {
-					byLogID[logID] = &datasetUsage{
-						LogID:       logID,
-						IngestBytes: ingest[logID].BytesTotal,
-						SearchBytes: search[logID].BytesTotal,
-					}
-				}
-			}
+			// A dataset may have been ingested into or searched, or both.
+			logIDs := slices.Concat(slices.Collect(maps.Keys(ingest)), slices.Collect(maps.Keys(search)))
+			slices.Sort(logIDs)
+			logIDs = slices.Compact(logIDs)
 
 			var summary usageSummary
-			datasets := make([]*datasetUsage, 0, len(byLogID))
-			for _, d := range byLogID {
+			datasets := make([]*datasetUsage, 0, len(logIDs))
+			for _, logID := range logIDs {
+				d := &datasetUsage{
+					LogID:       logID,
+					IngestBytes: ingest[logID].BytesTotal,
+					SearchBytes: search[logID].BytesTotal,
+				}
 				summary.IngestBytes += d.IngestBytes
 				summary.SearchBytes += d.SearchBytes
 				datasets = append(datasets, d)
@@ -305,13 +295,8 @@ type coverageSummary struct {
 func GetCoverage(client *brontosdk.Client) toolsets.ToolWrapper {
 	return toolsets.ToolWrapper{
 		Tool: &mcp.Tool{
-			Name: string(MethodGetCoverage),
-			Annotations: &mcp.ToolAnnotations{
-				Title:           "Get Coverage",
-				ReadOnlyHint:    true,
-				DestructiveHint: new(false),
-				OpenWorldHint:   new(false),
-			},
+			Name:        string(MethodGetCoverage),
+			Annotations: readAnnotations("Get Coverage"),
 			Description: "Reports, per dataset, whether it is monitored (which monitors cover it), searched, and " +
 				"still ingesting — surfacing blind spots such as a live dataset that no monitor is watching. " +
 				"Monitor coverage is resolved from the explicit dataset ids in monitors' backing queries; " +
@@ -321,7 +306,7 @@ func GetCoverage(client *brontosdk.Client) toolsets.ToolWrapper {
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
 					"time_range": timeRangeSchema(
-						"Window for the searched and ingesting axes, \"This month\" by default."),
+						"Window for the searched and ingesting axes, \"" + defaultUsageWindow + "\" by default."),
 				},
 			},
 		},
@@ -330,25 +315,29 @@ func GetCoverage(client *brontosdk.Client) toolsets.ToolWrapper {
 			if err != nil {
 				return helpers.NewToolResultTextError("%v", err), nil
 			}
-			timeRange := arguments.GetString("time_range", "")
-			if timeRange == "" {
-				timeRange = "This month"
-			}
+			timeRange := stringOr(arguments, "time_range", defaultUsageWindow)
 
-			datasets, err := client.Datasets(ctx)
-			if err != nil {
-				return errorResult(err, "")
-			}
-			monitorsByLog, err := monitorLogIDs(ctx, client)
-			if err != nil {
-				return errorResult(err, "")
-			}
-			ingest, err := usageByLog(ctx, client, brontosdk.UsageIngestion, timeRange)
-			if err != nil {
-				return errorResult(err, "")
-			}
-			search, err := usageByLog(ctx, client, brontosdk.UsageSearch, timeRange)
-			if err != nil {
+			var datasets []any
+			var monitorsByLog map[string][]string
+			var ingest, search map[string]brontosdk.UsageRow
+			group, groupCtx := errgroup.WithContext(ctx)
+			group.Go(func() (err error) {
+				datasets, err = client.Datasets(groupCtx)
+				return err
+			})
+			group.Go(func() (err error) {
+				monitorsByLog, err = monitorLogIDs(groupCtx, client)
+				return err
+			})
+			group.Go(func() (err error) {
+				ingest, err = usageByLog(groupCtx, client, brontosdk.UsageIngestion, timeRange)
+				return err
+			})
+			group.Go(func() (err error) {
+				search, err = usageByLog(groupCtx, client, brontosdk.UsageSearch, timeRange)
+				return err
+			})
+			if err := group.Wait(); err != nil {
 				return errorResult(err, "")
 			}
 

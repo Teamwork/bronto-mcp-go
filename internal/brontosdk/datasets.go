@@ -59,22 +59,15 @@ func (c *Client) AllDatasetKeys(ctx context.Context) (map[string][]string, error
 	return result, nil
 }
 
-// AllDatasetKeyValues maps every dataset id to its keys, and each key to the
-// sorted sample values seen for it.
-func (c *Client) AllDatasetKeyValues(ctx context.Context) (map[string]map[string][]string, error) {
-	body, err := c.topKeys(ctx, "")
+// DatasetKeyValues returns the sorted sample values seen for one key of one
+// dataset. A key the dataset does not have has none.
+func (c *Client) DatasetKeyValues(ctx context.Context, logID, key string) ([]string, error) {
+	body, err := c.topKeys(ctx, logID)
 	if err != nil {
 		return nil, err
 	}
-	result := make(map[string]map[string][]string, len(body))
-	for logID, keys := range body {
-		values := make(map[string][]string)
-		for key, detail := range jsonvalue.Map(keys) {
-			values[key] = sortedKeys(jsonvalue.Map(jsonvalue.Map(detail)["values"]))
-		}
-		result[logID] = values
-	}
-	return result, nil
+	detail := jsonvalue.Map(jsonvalue.Map(body[logID])[key])
+	return sortedKeys(jsonvalue.Map(detail["values"])), nil
 }
 
 // sortedKeys returns an object's keys in sorted order, never nil.

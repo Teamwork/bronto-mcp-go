@@ -11,13 +11,18 @@ import (
 	"github.com/teamwork/bronto-mcp-go/internal/jsonvalue"
 	"github.com/teamwork/mcp/pkg/helpers"
 	"github.com/teamwork/mcp/pkg/toolsets"
+	"golang.org/x/sync/errgroup"
 )
 
 // comparisonOperators are how a monitor compares its metric to the threshold.
-var comparisonOperators = enumOf("ABOVE", "BELOW", "ABOVE_OR_EQUAL", "BELOW_OR_EQUAL")
+var comparisonOperators = helpers.SliceToAny([]string{"ABOVE", "BELOW", "ABOVE_OR_EQUAL", "BELOW_OR_EQUAL"})
 
 // healthCheckWindow is how far back validate_monitors looks for data.
 const healthCheckWindow = "Last 24 hours"
+
+// healthCheckConcurrency caps how many health-check searches validate_monitors
+// runs against Bronto at once.
+const healthCheckConcurrency = 8
 
 type monitorQuery struct {
 	Name   string   `json:"name"`
@@ -52,12 +57,8 @@ const mutedIndefinitely = -1
 func CreateMonitor(client *brontosdk.Client) toolsets.ToolWrapper {
 	return toolsets.ToolWrapper{
 		Tool: &mcp.Tool{
-			Name: string(MethodCreateMonitor),
-			Annotations: &mcp.ToolAnnotations{
-				Title:           "Create Monitor",
-				DestructiveHint: new(false),
-				OpenWorldHint:   new(false),
-			},
+			Name:        string(MethodCreateMonitor),
+			Annotations: writeAnnotations("Create Monitor"),
 			Description: "Creates an alerting monitor over one or more datasets. The monitor is ALWAYS created " +
 				"muted so it can be reviewed in the Bronto UI before it can alert. A notification email is " +
 				"required and MUST belong to an existing Bronto user (ask the user for it); the monitor " +
@@ -110,37 +111,19 @@ func CreateMonitor(client *brontosdk.Client) toolsets.ToolWrapper {
 			},
 		},
 		Handler: func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			arguments, err := helpers.NewToolArguments(request)
+			var name, email, operator, window string
+			var threshold float64
+			var logIDs []string
+			arguments, err := bindArguments(request,
+				helpers.RequiredParam(&name, "name"),
+				helpers.RequiredParam(&email, "notification_email"),
+				helpers.RequiredNumericParam(&threshold, "threshold"),
+				helpers.RequiredParam(&operator, "comparison_operator"),
+				helpers.RequiredParam(&window, "window"),
+				requiredStrings(&logIDs, "log_ids"),
+			)
 			if err != nil {
 				return helpers.NewToolResultTextError("%v", err), nil
-			}
-			name, err := arguments.RequireString("name")
-			if err != nil {
-				return helpers.NewToolResultTextError("%v", err), nil
-			}
-			email, err := arguments.RequireString("notification_email")
-			if err != nil {
-				return helpers.NewToolResultTextError("%v", err), nil
-			}
-			threshold, err := arguments.RequireFloat("threshold")
-			if err != nil {
-				return helpers.NewToolResultTextError("%v", err), nil
-			}
-			operator, err := arguments.RequireString("comparison_operator")
-			if err != nil {
-				return helpers.NewToolResultTextError("%v", err), nil
-			}
-			window, err := arguments.RequireString("window")
-			if err != nil {
-				return helpers.NewToolResultTextError("%v", err), nil
-			}
-			logIDs, err := arguments.RequireStringSlice("log_ids")
-			if err != nil {
-				return helpers.NewToolResultTextError("%v", err), nil
-			}
-			selected := arguments.GetString("select", "")
-			if selected == "" {
-				selected = "count(*)"
 			}
 
 			// Only an existing Bronto user's email can receive monitor notifications.
@@ -164,7 +147,7 @@ func CreateMonitor(client *brontosdk.Client) toolsets.ToolWrapper {
 				Window:             window,
 				Queries: []monitorQuery{{
 					Name:   name,
-					Select: []string{selected},
+					Select: []string{stringOr(arguments, "select", countAll)},
 					From:   logIDs,
 					Where:  arguments.GetString("search_filter", ""),
 				}},
@@ -187,10 +170,10 @@ func CreateMonitor(client *brontosdk.Client) toolsets.ToolWrapper {
 // hasUserEmail reports whether email belongs to one of users, ignoring case
 // and surrounding space.
 func hasUserEmail(users []any, email string) bool {
-	email = strings.ToLower(strings.TrimSpace(email))
+	email = strings.TrimSpace(email)
 	for _, user := range users {
-		candidate := jsonvalue.String(jsonvalue.Map(user)["email"])
-		if candidate != "" && strings.ToLower(strings.TrimSpace(candidate)) == email {
+		candidate := strings.TrimSpace(jsonvalue.String(jsonvalue.Map(user)["email"]))
+		if candidate != "" && strings.EqualFold(candidate, email) {
 			return true
 		}
 	}
@@ -201,13 +184,8 @@ func hasUserEmail(users []any, email string) bool {
 func SearchMonitors(client *brontosdk.Client) toolsets.ToolWrapper {
 	return toolsets.ToolWrapper{
 		Tool: &mcp.Tool{
-			Name: string(MethodSearchMonitors),
-			Annotations: &mcp.ToolAnnotations{
-				Title:           "Search Monitors",
-				ReadOnlyHint:    true,
-				DestructiveHint: new(false),
-				OpenWorldHint:   new(false),
-			},
+			Name:        string(MethodSearchMonitors),
+			Annotations: readAnnotations("Search Monitors"),
 			Description: "Lists monitors, optionally filtered by a text query or status. With a monitor_id, " +
 				"returns that monitor plus its recent trigger/recovery events.",
 			InputSchema: &jsonschema.Schema{
@@ -284,15 +262,10 @@ func SearchMonitors(client *brontosdk.Client) toolsets.ToolWrapper {
 // with a from_expr would need a catalogue lookup, so its monitor contributes
 // no dataset ids.
 func monitorLogIDs(ctx context.Context, client *brontosdk.Client) (map[string][]string, error) {
-	definitions, err := client.MetricDefinitions(ctx)
+	monitors, byID, err := monitorsAndDefinitions(ctx, client)
 	if err != nil {
 		return nil, err
 	}
-	monitors, err := client.Monitors(ctx)
-	if err != nil {
-		return nil, err
-	}
-	byID := indexByID(definitions)
 
 	idsByLog := make(map[string][]string)
 	for _, item := range monitors {
@@ -309,6 +282,28 @@ func monitorLogIDs(ctx context.Context, client *brontosdk.Client) (map[string][]
 		}
 	}
 	return idsByLog, nil
+}
+
+// monitorsAndDefinitions fetches every monitor along with the metric
+// definitions that back them, indexed by id. A monitor's metric_id names its
+// definition.
+func monitorsAndDefinitions(ctx context.Context, client *brontosdk.Client,
+) (monitors []any, definitions map[string]map[string]any, err error) {
+	group, ctx := errgroup.WithContext(ctx)
+	group.Go(func() error {
+		var err error
+		monitors, err = client.Monitors(ctx)
+		return err
+	})
+	group.Go(func() error {
+		list, err := client.MetricDefinitions(ctx)
+		definitions = indexBy(list, "id")
+		return err
+	})
+	if err := group.Wait(); err != nil {
+		return nil, nil, err
+	}
+	return monitors, definitions, nil
 }
 
 // Health statuses a monitor can be given by validate_monitors.
@@ -346,50 +341,51 @@ func (s *healthSummary) add(status string) {
 func ValidateMonitors(client *brontosdk.Client) toolsets.ToolWrapper {
 	return toolsets.ToolWrapper{
 		Tool: &mcp.Tool{
-			Name: string(MethodValidateMonitors),
-			Annotations: &mcp.ToolAnnotations{
-				Title:           "Validate Monitors",
-				ReadOnlyHint:    true,
-				DestructiveHint: new(false),
-				OpenWorldHint:   new(false),
-			},
+			Name:        string(MethodValidateMonitors),
+			Annotations: readAnnotations("Validate Monitors"),
 			Description: "Health-checks existing monitors by re-running each monitor's backing query over the " +
 				"last 24 hours: 'error' = the monitor cannot fire as built, 'warn' = valid but no data, 'ok' = " +
 				"data present. Use to find alarms that have silently broken or gone quiet.",
-			InputSchema: &jsonschema.Schema{
-				Type:       "object",
-				Properties: map[string]*jsonschema.Schema{},
-			},
+			InputSchema: noArgumentsSchema(),
 		},
 		Handler: func(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			definitions, err := client.MetricDefinitions(ctx)
+			monitors, byID, err := monitorsAndDefinitions(ctx, client)
 			if err != nil {
 				return errorResult(err, "")
 			}
-			monitors, err := client.Monitors(ctx)
-			if err != nil {
+
+			// Monitors sharing a metric definition share its query, so each
+			// definition is checked once, several at a time.
+			checks := make(map[string]*monitorHealth)
+			for _, item := range monitors {
+				checks[jsonvalue.String(jsonvalue.Map(item)["metric_id"])] = &monitorHealth{}
+			}
+			group, groupCtx := errgroup.WithContext(ctx)
+			group.SetLimit(healthCheckConcurrency)
+			for metricID, check := range checks {
+				group.Go(func() error {
+					var err error
+					check.Status, check.Reason, err = checkMonitorQuery(groupCtx, client, firstQuery(byID[metricID]))
+					return err
+				})
+			}
+			if err := group.Wait(); err != nil {
+				// Bronto could not be reached at all, so no other monitor can be
+				// checked either.
 				return errorResult(err, "")
 			}
-			byID := indexByID(definitions)
 
 			var summary healthSummary
-			results := []monitorHealth{}
+			results := make([]monitorHealth, 0, len(monitors))
 			for _, item := range monitors {
 				monitor := jsonvalue.Map(item)
-				query := firstQuery(byID[jsonvalue.String(monitor["metric_id"])])
-
-				status, reason, err := checkMonitorQuery(ctx, client, query)
-				if err != nil {
-					// Bronto could not be reached at all, so no other monitor can be
-					// checked either.
-					return errorResult(err, "")
-				}
-				summary.add(status)
+				check := checks[jsonvalue.String(monitor["metric_id"])]
+				summary.add(check.Status)
 				results = append(results, monitorHealth{
 					MonitorID: monitorID(monitor),
 					Name:      monitor["name"],
-					Status:    status,
-					Reason:    reason,
+					Status:    check.Status,
+					Reason:    check.Reason,
 				})
 			}
 			return helpers.NewToolResultJSON(map[string]any{"summary": summary, "results": results})
@@ -422,7 +418,7 @@ func checkMonitorQuery(
 	}
 
 	body := map[string]any{
-		"select":     []string{"count(*)"},
+		"select":     []string{countAll},
 		"time_range": healthCheckWindow,
 	}
 	if len(logIDs) > 0 {

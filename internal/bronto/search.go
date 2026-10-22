@@ -2,6 +2,7 @@ package bronto
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -22,18 +23,18 @@ const defaultSearchWindow = 20 * time.Minute
 const timeseriesSlices = 10
 
 // timeRange reads a search's bounds in Unix milliseconds. Unset, they cover the
-// last 20 minutes, counted from the start of the current second.
+// last defaultSearchWindow, counted from the start of the current second.
 func timeRange(arguments helpers.ToolArguments) (start, end int64) {
-	current := now().Unix()
-	start = int64(arguments.GetInt("timerange_start", int(current-int64(defaultSearchWindow.Seconds()))*1000))
-	end = int64(arguments.GetInt("timerange_end", int(current)*1000))
+	current := now().Truncate(time.Second)
+	start = int64(arguments.GetInt("timerange_start", int(current.Add(-defaultSearchWindow).UnixMilli())))
+	end = int64(arguments.GetInt("timerange_end", int(current.UnixMilli())))
 	return start, end
 }
 
 func searchTimeSchemas(properties map[string]*jsonschema.Schema) map[string]*jsonschema.Schema {
 	properties["timerange_start"] = optional(timestampSchema(
 		"Unix timestamp in milliseconds representing the start of a time range, e.g. 1756063146000. " +
-			"If not specified, defaults to 20 minutes ago."))
+			fmt.Sprintf("If not specified, defaults to %d minutes ago.", int(defaultSearchWindow.Minutes()))))
 	properties["timerange_end"] = optional(timestampSchema(
 		"Unix timestamp in milliseconds representing the end of a time range, e.g. 1756063254000. " +
 			"If not specified, defaults to the current time."))
@@ -47,13 +48,8 @@ func searchTimeSchemas(properties map[string]*jsonschema.Schema) map[string]*jso
 func SearchLogs(client *brontosdk.Client) toolsets.ToolWrapper {
 	return toolsets.ToolWrapper{
 		Tool: &mcp.Tool{
-			Name: string(MethodSearchLogs),
-			Annotations: &mcp.ToolAnnotations{
-				Title:           "Execute Event Query",
-				ReadOnlyHint:    true,
-				DestructiveHint: new(false),
-				OpenWorldHint:   new(false),
-			},
+			Name:        string(MethodSearchLogs),
+			Annotations: readAnnotations("Execute Event Query"),
 			Description: "Searches log data. This tool returns a list of log events and their attributes. " +
 				"Bare words in search_filter perform full-text matching across the event. Field predicates " +
 				"such as \"field\"='value' only match that exact field; call " + string(MethodGetKeys) +
@@ -69,11 +65,8 @@ func SearchLogs(client *brontosdk.Client) toolsets.ToolWrapper {
 			},
 		},
 		Handler: func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			arguments, err := helpers.NewToolArguments(request)
-			if err != nil {
-				return helpers.NewToolResultTextError("%v", err), nil
-			}
-			logIDs, err := arguments.RequireStringSlice("log_ids")
+			var logIDs []string
+			arguments, err := bindArguments(request, requiredStrings(&logIDs, "log_ids"))
 			if err != nil {
 				return helpers.NewToolResultTextError("%v", err), nil
 			}
@@ -84,7 +77,7 @@ func SearchLogs(client *brontosdk.Client) toolsets.ToolWrapper {
 				To:     end,
 				LogIDs: logIDs,
 				Where:  arguments.GetString("search_filter", ""),
-				Select: []string{"*", "@raw"},
+				Select: defaultSelect,
 			})
 			if err != nil {
 				return errorResult(err, searchBadRequestHint)
@@ -130,13 +123,8 @@ func Timeseries(client *brontosdk.Client) toolsets.ToolWrapper {
 
 	return toolsets.ToolWrapper{
 		Tool: &mcp.Tool{
-			Name: string(MethodTimeseries),
-			Annotations: &mcp.ToolAnnotations{
-				Title:           "Execute Aggregate or Time-Series Query",
-				ReadOnlyHint:    true,
-				DestructiveHint: new(false),
-				OpenWorldHint:   new(false),
-			},
+			Name:        string(MethodTimeseries),
+			Annotations: readAnnotations("Execute Aggregate or Time-Series Query"),
 			Description: "Computes metric data from log data. This tool returns a list of data points for each " +
 				"group of the group_by_keys list. Each list represents the value of the computed metrics for a " +
 				"subset of the provided time range.\n\n" +
@@ -154,15 +142,11 @@ func Timeseries(client *brontosdk.Client) toolsets.ToolWrapper {
 			},
 		},
 		Handler: func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			arguments, err := helpers.NewToolArguments(request)
-			if err != nil {
-				return helpers.NewToolResultTextError("%v", err), nil
-			}
-			logIDs, err := arguments.RequireStringSlice("log_ids")
-			if err != nil {
-				return helpers.NewToolResultTextError("%v", err), nil
-			}
-			metricFunctions, err := arguments.RequireStringSlice("metric_functions")
+			var logIDs, metricFunctions []string
+			arguments, err := bindArguments(request,
+				requiredStrings(&logIDs, "log_ids"),
+				requiredStrings(&metricFunctions, "metric_functions"),
+			)
 			if err != nil {
 				return helpers.NewToolResultTextError("%v", err), nil
 			}

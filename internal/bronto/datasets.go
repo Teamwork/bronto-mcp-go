@@ -44,21 +44,13 @@ func newDataset(raw map[string]any) dataset {
 func GetDatasets(client *brontosdk.Client) toolsets.ToolWrapper {
 	return toolsets.ToolWrapper{
 		Tool: &mcp.Tool{
-			Name: string(MethodGetDatasets),
-			Annotations: &mcp.ToolAnnotations{
-				Title:           "Retrieve a List of Logs",
-				ReadOnlyHint:    true,
-				DestructiveHint: new(false),
-				OpenWorldHint:   new(false),
-			},
+			Name:        string(MethodGetDatasets),
+			Annotations: readAnnotations("Retrieve a List of Logs"),
 			Description: "Fetches all dataset details. Each dataset carries its name, the collection it belongs " +
 				"to, its log ID (a 36-character UUID), and its tags. Tags are string key-value pairs; the " +
 				"description tag is particularly useful to understand the type of data a dataset contains, and " +
 				"other common tags are service, teams and environment.",
-			InputSchema: &jsonschema.Schema{
-				Type:       "object",
-				Properties: map[string]*jsonschema.Schema{},
-			},
+			InputSchema: noArgumentsSchema(),
 		},
 		Handler: func(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			raw, err := client.Datasets(ctx)
@@ -78,13 +70,8 @@ func GetDatasets(client *brontosdk.Client) toolsets.ToolWrapper {
 func GetDatasetsByName(client *brontosdk.Client) toolsets.ToolWrapper {
 	return toolsets.ToolWrapper{
 		Tool: &mcp.Tool{
-			Name: string(MethodGetDatasetsByName),
-			Annotations: &mcp.ToolAnnotations{
-				Title:           "Find Datasets by Name and Collection",
-				ReadOnlyHint:    true,
-				DestructiveHint: new(false),
-				OpenWorldHint:   new(false),
-			},
+			Name:        string(MethodGetDatasetsByName),
+			Annotations: readAnnotations("Find Datasets by Name and Collection"),
 			Description: "Fetches details about a Bronto dataset. A dataset is uniquely identified by its name " +
 				"and its collection name: several datasets with the same name can belong to different " +
 				"collections, but only one dataset with a given name can belong to a given collection.",
@@ -106,16 +93,11 @@ func GetDatasetsByName(client *brontosdk.Client) toolsets.ToolWrapper {
 			},
 		},
 		Handler: func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			arguments, err := helpers.NewToolArguments(request)
-			if err != nil {
-				return helpers.NewToolResultTextError("%v", err), nil
-			}
-			name, err := arguments.RequireString("dataset_name")
-			if err != nil {
-				return helpers.NewToolResultTextError("%v", err), nil
-			}
-			collection, err := arguments.RequireString("collection_name")
-			if err != nil {
+			var name, collection string
+			if _, err := bindArguments(request,
+				helpers.RequiredParam(&name, "dataset_name"),
+				helpers.RequiredParam(&collection, "collection_name"),
+			); err != nil {
 				return helpers.NewToolResultTextError("%v", err), nil
 			}
 
@@ -139,13 +121,8 @@ func GetDatasetsByName(client *brontosdk.Client) toolsets.ToolWrapper {
 func GetKeys(client *brontosdk.Client) toolsets.ToolWrapper {
 	return toolsets.ToolWrapper{
 		Tool: &mcp.Tool{
-			Name: string(MethodGetKeys),
-			Annotations: &mcp.ToolAnnotations{
-				Title:           "Get Top Keys for a Specific Log ID",
-				ReadOnlyHint:    true,
-				DestructiveHint: new(false),
-				OpenWorldHint:   new(false),
-			},
+			Name:        string(MethodGetKeys),
+			Annotations: readAnnotations("Get Top Keys for a Specific Log ID"),
 			Description: "Fetches all keys present in a dataset, which is represented by a log ID. A log ID is " +
 				"a UUID that maps to a dataset and collection name; given those names, " +
 				string(MethodGetDatasetsByName) + " returns it. This tool returns the names of the keys " +
@@ -164,12 +141,8 @@ func GetKeys(client *brontosdk.Client) toolsets.ToolWrapper {
 			},
 		},
 		Handler: func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			arguments, err := helpers.NewToolArguments(request)
-			if err != nil {
-				return helpers.NewToolResultTextError("%v", err), nil
-			}
-			logID, err := arguments.RequireString("log_id")
-			if err != nil {
+			var logID string
+			if _, err := bindArguments(request, helpers.RequiredParam(&logID, "log_id")); err != nil {
 				return helpers.NewToolResultTextError("%v", err), nil
 			}
 
@@ -186,20 +159,12 @@ func GetKeys(client *brontosdk.Client) toolsets.ToolWrapper {
 func GetAllDatasetsKeys(client *brontosdk.Client) toolsets.ToolWrapper {
 	return toolsets.ToolWrapper{
 		Tool: &mcp.Tool{
-			Name: string(MethodGetAllDatasetsKeys),
-			Annotations: &mcp.ToolAnnotations{
-				Title:           "Retrieve Top Keys for Logs",
-				ReadOnlyHint:    true,
-				DestructiveHint: new(false),
-				OpenWorldHint:   new(false),
-			},
+			Name:        string(MethodGetAllDatasetsKeys),
+			Annotations: readAnnotations("Retrieve Top Keys for Logs"),
 			Description: "Fetches all keys present in all datasets, as a map from dataset ID to the names of the " +
 				"keys present in that dataset. This tool is useful to select datasets that contain certain " +
 				"keys, and to identify the exact key name based on some description.",
-			InputSchema: &jsonschema.Schema{
-				Type:       "object",
-				Properties: map[string]*jsonschema.Schema{},
-			},
+			InputSchema: noArgumentsSchema(),
 		},
 		Handler: func(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			keys, err := client.AllDatasetKeys(ctx)
@@ -215,13 +180,8 @@ func GetAllDatasetsKeys(client *brontosdk.Client) toolsets.ToolWrapper {
 func GetKeyValues(client *brontosdk.Client) toolsets.ToolWrapper {
 	return toolsets.ToolWrapper{
 		Tool: &mcp.Tool{
-			Name: string(MethodGetKeyValues),
-			Annotations: &mcp.ToolAnnotations{
-				Title:           "Retrieve Values for a Dataset Key",
-				ReadOnlyHint:    true,
-				DestructiveHint: new(false),
-				OpenWorldHint:   new(false),
-			},
+			Name:        string(MethodGetKeyValues),
+			Annotations: readAnnotations("Retrieve Values for a Dataset Key"),
 			Description: "Fetches the values of the provided key in the provided dataset. This tool returns a " +
 				"list of strings, each a value of the key seen in that dataset.",
 			InputSchema: &jsonschema.Schema{
@@ -240,26 +200,17 @@ func GetKeyValues(client *brontosdk.Client) toolsets.ToolWrapper {
 			},
 		},
 		Handler: func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			arguments, err := helpers.NewToolArguments(request)
-			if err != nil {
-				return helpers.NewToolResultTextError("%v", err), nil
-			}
-			key, err := arguments.RequireString("key")
-			if err != nil {
-				return helpers.NewToolResultTextError("%v", err), nil
-			}
-			logID, err := arguments.RequireString("log_id")
-			if err != nil {
+			var key, logID string
+			if _, err := bindArguments(request,
+				helpers.RequiredParam(&key, "key"),
+				helpers.RequiredParam(&logID, "log_id"),
+			); err != nil {
 				return helpers.NewToolResultTextError("%v", err), nil
 			}
 
-			keyValues, err := client.AllDatasetKeyValues(ctx)
+			values, err := client.DatasetKeyValues(ctx, logID, key)
 			if err != nil {
 				return errorResult(err, "")
-			}
-			values := keyValues[logID][key]
-			if values == nil {
-				values = []string{}
 			}
 			return helpers.NewToolResultJSON(values)
 		},

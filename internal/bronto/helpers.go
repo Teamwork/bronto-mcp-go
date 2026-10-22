@@ -3,6 +3,7 @@ package bronto
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -16,6 +17,21 @@ import (
 // now is the clock the search tools default their time range from. Tests
 // replace it.
 var now = time.Now
+
+// Defaults the tools fall back to when the caller leaves a field unset.
+const (
+	// defaultUsageWindow is the relative window the usage and coverage
+	// reports cover. Bronto's limits are per calendar month.
+	defaultUsageWindow = "This month"
+	// defaultErrorWindow is the relative window the error summary covers.
+	defaultErrorWindow = "Last 24 hours"
+	// countAll is the aggregate a monitor evaluates when given none.
+	countAll = "count(*)"
+)
+
+// defaultSelect is what an event search returns when it names no fields:
+// every parsed field plus the raw line. It is shared, so never modify it.
+var defaultSelect = []string{"*", "@raw"}
 
 // searchBadRequestHint explains a 400 from a search: almost always a filter
 // that does not parse, or a key the dataset does not have.
@@ -31,14 +47,14 @@ func errorResult(err error, badRequestHint string) (*mcp.CallToolResult, error) 
 	case errors.As(err, &httpErr):
 		var message string
 		switch httpErr.StatusCode {
-		case 400:
+		case http.StatusBadRequest:
 			message = "The request was rejected as malformed. Check the parameters."
 			if badRequestHint != "" {
 				message = badRequestHint
 			}
-		case 401:
+		case http.StatusUnauthorized:
 			message = "Not authorised. Please check your Bronto API key and endpoint."
-		case 403:
+		case http.StatusForbidden:
 			message = "Not allowed. Please check your Bronto API key permissions."
 		default:
 			message = fmt.Sprintf("Bronto request failed with status %d.", httpErr.StatusCode)
@@ -63,6 +79,66 @@ func errorResult(err error, badRequestHint string) (*mcp.CallToolResult, error) 
 func isBrontoAnswer(err error) bool {
 	var httpErr *brontosdk.HTTPError
 	return errors.As(err, &httpErr) || errors.Is(err, brontosdk.ErrUnexpectedResponse)
+}
+
+// bindArguments reads a call's arguments and binds them with params, stopping
+// at the first that is missing or of the wrong type.
+func bindArguments(request *mcp.CallToolRequest, params ...helpers.ParamFunc) (helpers.ToolArguments, error) {
+	arguments, err := helpers.NewToolArguments(request)
+	if err != nil {
+		return nil, err
+	}
+	if err := helpers.ParamGroup(arguments, params...); err != nil {
+		return nil, err
+	}
+	return arguments, nil
+}
+
+// requiredStrings binds a required list of strings. helpers.RequiredParam
+// cannot, as JSON decodes an array as []any.
+func requiredStrings(target *[]string, key string) helpers.ParamFunc {
+	return func(params map[string]any) error {
+		values, err := helpers.ToolArguments(params).RequireStringSlice(key)
+		if err != nil {
+			return err
+		}
+		*target = values
+		return nil
+	}
+}
+
+// stringOr reads an optional string argument, falling back when it is unset,
+// null or empty.
+func stringOr(arguments helpers.ToolArguments, key, fallback string) string {
+	if value := arguments.GetString(key, ""); value != "" {
+		return value
+	}
+	return fallback
+}
+
+// readAnnotations describes a tool that only reads from Bronto.
+func readAnnotations(title string) *mcp.ToolAnnotations {
+	return &mcp.ToolAnnotations{
+		Title:           title,
+		ReadOnlyHint:    true,
+		DestructiveHint: new(false),
+		OpenWorldHint:   new(false),
+	}
+}
+
+// writeAnnotations describes a tool that creates something in Bronto without
+// changing or removing anything that exists.
+func writeAnnotations(title string) *mcp.ToolAnnotations {
+	return &mcp.ToolAnnotations{
+		Title:           title,
+		DestructiveHint: new(false),
+		OpenWorldHint:   new(false),
+	}
+}
+
+// noArgumentsSchema is the input schema of a tool that takes no arguments.
+func noArgumentsSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "object", Properties: map[string]*jsonschema.Schema{}}
 }
 
 // optional lets a property also be null, which is how clients commonly send a
@@ -143,13 +219,12 @@ func fromLogIDs(from any) []string {
 	return nil
 }
 
-// indexByID maps each object in items to its "id" field, skipping those
-// without one.
-func indexByID(items []any) map[string]map[string]any {
+// indexBy maps each object in items to its field, skipping those without one.
+func indexBy(items []any, field string) map[string]map[string]any {
 	index := make(map[string]map[string]any, len(items))
 	for _, item := range items {
 		object := jsonvalue.Map(item)
-		if id := object["id"]; jsonvalue.Truthy(id) {
+		if id := object[field]; jsonvalue.Truthy(id) {
 			index[jsonvalue.String(id)] = object
 		}
 	}
@@ -159,13 +234,4 @@ func indexByID(items []any) map[string]map[string]any {
 // monitorID reads a monitor's id, which older payloads call monitor_id.
 func monitorID(monitor map[string]any) string {
 	return jsonvalue.String(jsonvalue.FirstTruthy(monitor["id"], monitor["monitor_id"]))
-}
-
-// enumOf converts values to the []any a schema's Enum takes.
-func enumOf(values ...string) []any {
-	enum := make([]any, len(values))
-	for i, value := range values {
-		enum[i] = value
-	}
-	return enum
 }
