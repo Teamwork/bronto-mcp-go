@@ -84,7 +84,7 @@ The server itself is configured by `github.com/teamwork/mcp/pkg/config` under th
 | Variable | Default | |
 |---|---|---|
 | `BRONTO_MCP_SERVER_ADDRESS` | `:8080` | Address to listen on. |
-| `BRONTO_MCP_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
+| `BRONTO_MCP_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. `debug` adds a line for every Bronto API call. |
 | `BRONTO_MCP_LOG_FORMAT` | `text` | `text` or `json`. |
 | `BRONTO_MCP_SENTRY_DSN` | — | Reports errors to Sentry when set. |
 | `BRONTO_MCP_ENV` | `dev` | Environment name used in logs and traces. |
@@ -274,7 +274,8 @@ started with, so only run it where the people who can reach it are entitled to t
 or behind your network's access controls.
 
 The API key travels in the `x-bronto-api-key` header. Bronto requests use their own HTTP client, not the shared
-logging one, so the key is never written to the logs.
+logging one, and their log lines record only the method, path, query, status and duration, so the key is never
+written to the logs.
 
 ## Development
 

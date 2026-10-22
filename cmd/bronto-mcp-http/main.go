@@ -15,7 +15,6 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -80,8 +79,9 @@ func main() {
 
 	// Read before config.Load, which reads the BRONTO_MCP_ variables. A
 	// missing file is fine: deployments configure the environment directly.
+	// The configured logger does not exist yet, so this uses the default one.
 	if err := godotenv.Load(envFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		fmt.Fprintf(os.Stderr, "failed to read %s: %v\n", envFile, err)
+		slog.Error("failed to read env file", slog.String("file", envFile), slog.String("error", err.Error()))
 		exit(exitCodeSetupFailure)
 	}
 
@@ -108,7 +108,8 @@ func main() {
 	// The Bronto client gets its own HTTP client rather than the shared
 	// Teamwork one: that one's logging transport writes out every request
 	// header but Authorization, and the API key travels in x-bronto-api-key.
-	client := brontosdk.NewClient(endpoint, apiKey, &http.Client{Timeout: brontoTimeout})
+	client := brontosdk.NewClient(endpoint, apiKey, &http.Client{Timeout: brontoTimeout},
+		brontosdk.WithLogger(resources.Logger()))
 
 	group := bronto.DefaultToolsetGroup(*readOnly, client)
 	if err := group.EnableToolsets(methods.Toolsets()...); err != nil {

@@ -1,10 +1,14 @@
 package brontosdk
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -109,5 +113,52 @@ func TestMonitorEventsEscapesTheID(t *testing.T) {
 	}
 	if path != "/monitors/a%2Fb/events" {
 		t.Errorf("path = %q", path)
+	}
+}
+
+func TestClientLogsEachRequest(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		level  string
+	}{
+		{name: "success", status: http.StatusOK, body: `{"events":[]}`, level: "DEBUG"},
+		{name: "error status", status: http.StatusForbidden, body: `{"details":"key lacks scope"}`, level: "WARN"},
+		{name: "undecodable body", status: http.StatusOK, body: `not json`, level: "ERROR"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.status)
+				_, _ = io.WriteString(w, test.body)
+			}))
+			t.Cleanup(server.Close)
+
+			var out bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&out, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			client := NewClient(server.URL, "secret", server.Client(), WithLogger(logger))
+			_, _ = client.MonitorEvents(t.Context(), "m-1")
+
+			if strings.Contains(out.String(), "secret") {
+				t.Errorf("log contains the API key: %s", out.String())
+			}
+			var line map[string]any
+			if err := json.Unmarshal(out.Bytes(), &line); err != nil {
+				t.Fatalf("want one JSON log line, got %q: %v", out.String(), err)
+			}
+			if line["level"] != test.level {
+				t.Errorf("level = %v, want %s", line["level"], test.level)
+			}
+			if line["bronto.method"] != http.MethodGet || line["bronto.path"] != "/monitors/m-1/events" {
+				t.Errorf("line = %v", line)
+			}
+			if status, _ := line["bronto.status"].(float64); int(status) != test.status {
+				t.Errorf("bronto.status = %v, want %d", line["bronto.status"], test.status)
+			}
+			if _, ok := line["bronto.duration"]; !ok {
+				t.Error("missing bronto.duration")
+			}
+		})
 	}
 }
